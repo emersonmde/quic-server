@@ -1,0 +1,4 @@
+.vscode
+build/
+*.pb-c.c
+*.pb-c.h
