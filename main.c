@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <msquic.h>
-#include <msquicp.h>
-#include "proto/message.pb-c.h"
+#include "msquic/src/inc/msquic.h"
+#include "msquic/src/inc/msquicp.h"
+#include <proto/message.pb-c.h>
+
+const QUIC_API_TABLE* MsQuic;
 
 // Callback function for handling incoming QUIC streams
 QUIC_STATUS QUIC_API StreamCallback(_In_ HQUIC StreamHandle, _In_opt_ void* Context, _Inout_ QUIC_STREAM_EVENT* Event)
@@ -15,16 +17,18 @@ QUIC_STATUS QUIC_API StreamCallback(_In_ HQUIC StreamHandle, _In_opt_ void* Cont
             QUIC_BUFFER* ReceiveBuffer = &Event->RECEIVE.Buffers[0];
             if (ReceiveBuffer->Length > 0) {
                 // Deserialize the protobuf message
-                MyMessage message = MY_MESSAGE__INIT;
-                my_message__unpack(NULL, ReceiveBuffer->Length, ReceiveBuffer->Buffer, &message);
+                Quicserver__Message* message = quicserver__message__unpack(NULL, ReceiveBuffer->Length, ReceiveBuffer->Buffer);
+                if (message != NULL) {
+                    // Process the received message
+                    printf("Received message:\n");
+                    printf("  Key: %s\n", message->key);
+                    printf("  Value: %.*s\n", (int)message->value.len, (char*)message->value.data);
 
-                // Process the received message
-                printf("Received message:\n");
-                printf("  Key: %s\n", message.key);
-                printf("  Value: %.*s\n", (int)message.value.len, message.value.data);
-
-                // Cleanup
-                my_message__free_unpacked(&message, NULL);
+                    // Cleanup the unpacked protobuf message
+                    quicserver__message__free_unpacked(message, NULL);
+                } else {
+                    printf("Failed to unpack the protobuf message\n");
+                }
             }
 
             // Close the stream
