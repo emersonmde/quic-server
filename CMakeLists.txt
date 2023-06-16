@@ -1,11 +1,5 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.20)
 project(QuicServer)
-
-# Set OpenSSL directory
-set(OPENSSL_ROOT_DIR "/opt/homebrew/opt/openssl@3" CACHE PATH "OpenSSL root directory")
-
-# Find OpenSSL
-find_package(OpenSSL REQUIRED)
 
 # Add your source files
 set(SOURCES
@@ -16,19 +10,44 @@ set(SOURCES
 set(HEADERS
 )
 
-# Add protobuf generated files
-set(PROTO_SOURCES
-    message.pb-c.c
+# Protobuf file
+set(PROTO_FILE message.proto)
+
+# Protobuf-c output directory
+set(PROTO_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/proto_output)
+
+# Find ProtobufC package
+set(ProtobufC_DIR "/usr/local/opt/protobuf-c" CACHE PATH "ProtobufC installation directory")
+
+find_library(ProtobufC_LIBRARIES
+    NAMES protobuf-c
+    HINTS "${ProtobufC_DIR}/lib"
 )
-set(PROTO_HEADERS
-    message.pb-c.h
+
+find_path(ProtobufC_INCLUDE_DIRS
+    NAMES protobuf-c/protobuf-c.h
+    HINTS "${ProtobufC_DIR}/include"
+)
+
+# Create the output directory if it doesn't exist
+file(MAKE_DIRECTORY ${PROTO_OUTPUT_DIR})
+
+# Generate protobuf-c source and header files during build
+add_custom_command(
+    OUTPUT ${PROTO_OUTPUT_DIR}/message.pb-c.c ${PROTO_OUTPUT_DIR}/message.pb-c.h
+    COMMAND protoc-c --c_out=${PROTO_OUTPUT_DIR} --proto_path=${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/proto/${PROTO_FILE}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/proto/${PROTO_FILE}
+    COMMENT "Generating protobuf-c files"
 )
 
 # Create the executable
-add_executable(quic_server ${SOURCES} ${HEADERS} ${PROTO_SOURCES} ${PROTO_HEADERS})
+add_executable(quic_server ${SOURCES} ${HEADERS} ${PROTO_OUTPUT_DIR}/message.pb-c.c)
+
+# Add the msquic submodule directory
+add_subdirectory(msquic)
 
 # Include directories
-target_include_directories(quic_server PRIVATE ${PROTOBUF_INCLUDE_DIRS})
+target_include_directories(quic_server PRIVATE ${PROTO_OUTPUT_DIR} ${ProtobufC_INCLUDE_DIRS})
 
 # Link libraries
-target_link_libraries(quic_server PRIVATE quiche OpenSSL::Crypto ${PROTOBUF_LIBRARIES})
+target_link_libraries(quic_server PRIVATE msquic ${ProtobufC_LIBRARIES})
