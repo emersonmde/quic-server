@@ -1,134 +1,121 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "msquic/src/inc/msquic.h"
-#include "msquic/src/inc/msquicp.h"
-#include <proto/message.pb-c.h>
+#include <msquic.h>
+
+#define ALPN "echo"
+#define PORT 4433
+
+HQUIC Registration;
+HQUIC Configuration;
+HQUIC Listener;
 
 const QUIC_API_TABLE* MsQuic;
+const QUIC_BUFFER Alpn = { sizeof("sample") - 1, (uint8_t*)"sample" };
 
-// Callback function for handling incoming QUIC streams
-QUIC_STATUS QUIC_API StreamCallback(_In_ HQUIC StreamHandle, _In_opt_ void* Context, _Inout_ QUIC_STREAM_EVENT* Event)
+QUIC_STATUS
+StreamCallback(
+    HQUIC Stream,
+    void* Context,
+    QUIC_STREAM_EVENT* Event
+    )
+{
+
+    switch (Event->Type) {
+    case QUIC_STREAM_EVENT_RECEIVE:
+        MsQuic->StreamSend(
+            Stream,
+            Event->RECEIVE.Buffers,
+            Event->RECEIVE.BufferCount,
+            QUIC_SEND_FLAG_NONE,
+            NULL
+        );
+        break;
+    // case QUIC_STREAM_EVENT_PEER_SEND_ABORTED:
+    case QUIC_STREAM_EVENT_PEER_SEND_ABORTED:
+        MsQuic->StreamShutdown(
+            Stream,
+            QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL,
+            0
+        );
+        break;
+    default:
+        break;
+    }
+    return QUIC_STATUS_SUCCESS;
+}
+
+QUIC_STATUS
+ConnectionCallback(
+    HQUIC Connection,
+    void* Context,
+    QUIC_CONNECTION_EVENT* Event
+    )
 {
     switch (Event->Type) {
-        case QUIC_STREAM_EVENT_RECEIVE:
-        {
-            // Process received data
-            QUIC_BUFFER* ReceiveBuffer = &Event->RECEIVE.Buffers[0];
-            if (ReceiveBuffer->Length > 0) {
-                // Deserialize the protobuf message
-                Quicserver__Message* message = quicserver__message__unpack(NULL, ReceiveBuffer->Length, ReceiveBuffer->Buffer);
-                if (message != NULL) {
-                    // Process the received message
-                    printf("Received message:\n");
-                    printf("  Key: %s\n", message->key);
-                    printf("  Value: %.*s\n", (int)message->value.len, (char*)message->value.data);
-
-                    // Cleanup the unpacked protobuf message
-                    quicserver__message__free_unpacked(message, NULL);
-                } else {
-                    printf("Failed to unpack the protobuf message\n");
-                }
-            }
-
-            // Close the stream
-            MsQuic->StreamShutdown(StreamHandle, QUIC_STREAM_SHUTDOWN_FLAG_NONE, 0);
-            break;
-        }
-
-        default:
-            break;
+    case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
+        MsQuic->SetCallbackHandler(
+            Event->PEER_STREAM_STARTED.Stream,
+            (void*)StreamCallback,
+            NULL
+        );
+        break;
+    default:
+        break;
     }
+    return QUIC_STATUS_SUCCESS;
+}
 
+QUIC_STATUS
+ListenerCallback(
+    HQUIC Listener,
+    void* Context,
+    QUIC_LISTENER_EVENT* Event
+    )
+{
+    switch (Event->Type) {
+    case QUIC_LISTENER_EVENT_NEW_CONNECTION:
+        MsQuic->SetCallbackHandler(
+            Event->NEW_CONNECTION.Connection,
+            (void*)ConnectionCallback,
+            NULL
+        );
+        MsQuic->ConnectionSetConfiguration(
+            Event->NEW_CONNECTION.Connection,
+            Configuration
+        );
+        break;
+    default:
+        break;
+    }
     return QUIC_STATUS_SUCCESS;
 }
 
 int main()
 {
-    QUIC_STATUS Status;
-    HQUIC Registration = NULL;
-    HQUIC Configuration = NULL;
-    HQUIC Listener = NULL;
-    QUIC_SETTINGS Settings;
-    QUIC_BUFFER AlpnBuffer;
+    QUIC_CREDENTIAL_CONFIG CredConfig = {
+        .Type = QUIC_CREDENTIAL_TYPE_NONE,
+        .Flags = QUIC_CREDENTIAL_FLAG_NONE
+    };
 
-    // Create the QUIC registration
-    Status = MsQuic->RegistrationOpen(&MsQuicRegistrationCallbacks, &Registration);
-    if (QUIC_FAILED(Status)) {
-        printf("Failed to open QUIC registration: 0x%x\n", Status);
-        return -1;
-    }
+    MsQuicOpen2(&MsQuic);
+    MsQuic->RegistrationOpen(NULL, &Registration);
 
-    // Create the QUIC configuration
-    Status = MsQuic->ConfigurationOpen(Registration, &AlpnBuffer, 1, NULL, &Configuration);
-    if (QUIC_FAILED(Status)) {
-        printf("Failed to open QUIC configuration: 0x%x\n", Status);
-        return -1;
-    }
+    QUIC_SETTINGS Settings = { .IsSet.IdleTimeoutMs = TRUE };
+    MsQuic->ConfigurationOpen(Registration, &Alpn, 1, &Settings, sizeof(Settings), NULL, &Configuration);
+    MsQuic->ConfigurationLoadCredential(Configuration, &CredConfig);
+    MsQuic->ListenerOpen(Registration, ListenerCallback, NULL, &Listener);
 
-    // Set QUIC settings
-    QuicZeroMemory(&Settings, sizeof(Settings));
-    Settings.IdleTimeoutMs = 60000;
-    Settings.IsSet.IdleTimeoutMs = TRUE;
-    Status = MsQuic->ConfigurationSetSettings(Configuration, &Settings);
-    if (QUIC_FAILED(Status)) {
-        printf("Failed to set QUIC configuration settings: 0x%x\n", Status);
-        return -1;
-    }
 
-    // Open a QUIC listener
-    Status = MsQuic->ListenerOpen(Registration, StreamCallback, NULL, &Listener);
-    if (QUIC_FAILED(Status)) {
-        printf("Failed to open QUIC listener: 0x%x\n", Status);
-        return -1;
-    }
+    // QUIC_ADDR addr = { .Ipv4 = QUIC_ADDR_V4_ANY, .Ipv4.sin_port = htons(PORT) };
+    QUIC_ADDR addr = {0};
+    // TODO Alpn?
+    MsQuic->ListenerStart(Listener, &Alpn, 1, &addr);
 
-    // Start listening on the specified address and port
-    QUIC_ADDR Address;
-    QuicAddrSetFamily(&Address, QUIC_ADDRESS_FAMILY_UNSPEC);
-    QuicAddrSetPort(&Address, 12345);
-    Status = MsQuic->ListenerStart(Listener, Configuration, &Address);
-    if (QUIC_FAILED(Status)) {
-        printf("Failed to start QUIC listener: 0x%x\n", Status);
-        return -1;
-    }
+    printf("Server is running. Press Enter to exit...\n");
+    getchar();
 
-    // Wait for incoming connections and events
-    while (1) {
-        QUIC_EVENT Event;
-        QUIC_HANDLE Handles[1];
-        QUIC_STREAM* Stream;
-        QuicEventInitialize(&Event, TRUE, FALSE);
-        Handles[0] = Event.Handle;
-        Status = MsQuic->WaitForEvent(Registration, Handles, 1, &Event);
-        if (QUIC_FAILED(Status)) {
-            printf("Failed to wait for event: 0x%x\n", Status);
-            break;
-        }
-        // Accept new connections
-        Status = MsQuic->ListenerAccept(Listener, NULL, NULL, &Stream);
-        if (QUIC_FAILED(Status)) {
-            printf("Failed to accept connection: 0x%x\n", Status);
-            break;
-        }
-        // Start receiving on the stream
-        Status = MsQuic->StreamReceiveSetEnabled(Stream, TRUE);
-        if (QUIC_FAILED(Status)) {
-            printf("Failed to set receive enabled: 0x%x\n", Status);
-            break;
-        }
-    }
-
-    // Cleanup
-    if (Listener != NULL) {
-        MsQuic->ListenerClose(Listener);
-    }
-    if (Configuration != NULL) {
-        MsQuic->ConfigurationClose(Configuration);
-    }
-    if (Registration != NULL) {
-        MsQuic->RegistrationClose(Registration);
-    }
+    MsQuic->ListenerClose(Listener);
+    MsQuic->ConfigurationClose(Configuration);
+    MsQuic->RegistrationClose(Registration);
+    MsQuicClose(MsQuic);
 
     return 0;
 }

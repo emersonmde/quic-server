@@ -1,4 +1,6 @@
 .vscode
+cmake-build-debug
+.idea
 build/
 *.pb-c.c
 *.pb-c.h
